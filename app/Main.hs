@@ -2,16 +2,20 @@
 
 import Data.Map
 import qualified Data.Map as M
+import Control.Monad.Reader
 
 newtype Rec f = In { out :: f (Rec f) }
 
 type Algebra f a = f a -> a
 
 type Id = String 
+type Error = String
 
 type ExecutionStack = [Statement]
 type SymbolTable = Map Id (Maybe Value)
 type OutputStream = [Value]
+
+type EvalReader = Reader EvalState (Either Error Value)
 
 data Type = 
     IntT 
@@ -40,6 +44,7 @@ data StatementF a =
     | VarAssignment Id Expr
     | Print Expr
     | If Expr a a
+    | Compound [a]
     deriving (Show, Eq, Functor)
 
 newtype Expr = Expr { runExpr :: Rec ExprF }
@@ -64,10 +69,10 @@ instance Show Statement where
     show (Statement s) = show s
 
 mkExpr :: ExprF (Rec ExprF) -> Expr
-mkExpr expr = Expr $ In expr
+mkExpr = Expr . In
 
 mkStatement :: StatementF (Rec StatementF) -> Statement
-mkStatement st = Statement $ In st
+mkStatement = Statement . In
 
 data EvalState =    
     EvalState { executionStack :: ExecutionStack,
@@ -76,6 +81,9 @@ data EvalState =
               }
     deriving (Show, Eq)
 
+emptyState :: EvalState
+emptyState = EvalState { executionStack = [], symbolTable = M.empty, outputStream = [] }
+
 cata :: (Functor f) => Algebra f a -> Rec f -> a
 cata f = f . fmap (cata f) . out
 
@@ -83,39 +91,43 @@ initState :: ExecutionStack -> EvalState
 initState program = EvalState { executionStack = program, symbolTable = M.empty, outputStream = [] }
 
 mkBool :: Bool -> Expr
-mkBool val = mkExpr $ Constant $ BoolV val
+mkBool = mkExpr . Constant . BoolV 
 
 mkInt :: Int -> Expr
-mkInt val = mkExpr $ Constant $ IntV val
+mkInt = mkExpr . Constant . IntV 
 
 mkVar :: Id -> Expr
-mkVar id = mkExpr $ Variable id
+mkVar = mkExpr . Variable
 
-{-evalExpr :: ExprF (Maybe Value) -> Maybe Value
-evalExpr expr = case expr of  
-    (Constant x) -> Just x
-    (Variable id) -> Nothing
-    (Plus (Just x) (Just y)) -> Just $ x + y
-    (Minus (Just x) (Just y)) -> Just $ x - y
-    (Multiply (Just x) (Just y)) -> Just $ x * y
-    (Divide (Just x) (Just y)) -> Just $ x / y 
-    _ -> Nothing -}
-
-test1 :: ExprF (Maybe Value)
-test1 = Constant (IntV 5)
-
-test2 :: ExprF (Maybe Value)
-test2 = Constant Nothing
-
-ex1 :: [Statement]
-ex1 = mkStatement <$>
-    [
-        VarDeclaration BoolT "a",
-        VarDeclaration IntT "v",
-        VarAssignment "a" (mkBool True),
-        If (mkVar "a") (In $ VarAssignment "v" (mkInt 2)) (In $ VarAssignment "v" (mkInt 3)),
-        Print (mkVar "v")
-    ]
+eval :: Expr -> EvalReader 
+eval (Expr (In (Constant x))) = pure $ Right x 
+eval (Expr (In (Variable var))) = do
+    state <- ask
+    let val = lookupSymbol state var 
+    case val of
+        Just (Just x) -> pure $ Right $ x
+        Just Nothing -> pure $ Left $ "Error: Variable " ++ var ++ " has not been initialized."
+        Nothing -> pure $ Left $ "Error: Trying to use undeclared variable " ++ var ++ "."
+    where
+        lookupSymbol state var = M.lookup var $ symbolTable state
+eval (Expr (In (Plus x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 + n2)))
+eval (Expr (In (Minus x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 - n2)))
+eval (Expr (In (Multiply x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 * n2)))
+eval (Expr (In (Divide x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 `div` n2)))
+eval (Expr (In (And x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (BoolV n1)) (Right (BoolV n2)) = (Right (BoolV (n1 && n2)))
+eval (Expr (In (Or x y))) = op <$> eval (Expr x) <*> eval (Expr y)
+    where
+        op (Right (BoolV n1)) (Right (BoolV n2)) = (Right (BoolV (n1 || n2)))
 
 main :: IO ()
 main = putStrLn "Hello World!"
