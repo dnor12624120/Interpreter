@@ -1,8 +1,10 @@
 {-# LANGUAGE DeriveFunctor, TypeFamilies, LambdaCase, UndecidableInstances #-}
 
 import Data.Map
-import qualified Data.Map as M
 import Control.Monad.Reader
+import Control.Monad.Writer
+import Control.Monad.State
+import qualified Data.Map as M
 
 newtype Rec f = In { out :: f (Rec f) }
 
@@ -47,6 +49,11 @@ data StatementF a =
     | Compound [a]
     deriving (Show, Eq, Functor)
 
+data EvalCode =
+    SuccessC
+    | ErrorC String
+    deriving (Show, Eq)
+
 newtype Expr = Expr { runExpr :: Rec ExprF }
 newtype Statement = Statement { runStatement :: Rec StatementF }
             
@@ -75,7 +82,8 @@ mkStatement :: StatementF (Rec StatementF) -> Statement
 mkStatement = Statement . In
 
 data EvalState =    
-    EvalState { executionStack :: ExecutionStack,
+    EvalState { 
+                executionStack :: ExecutionStack,
                 symbolTable :: SymbolTable, 
                 outputStream :: OutputStream 
               }
@@ -112,22 +120,75 @@ eval (Expr (In (Variable var))) = do
         lookupSymbol state var = M.lookup var $ symbolTable state
 eval (Expr (In (Plus x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 + n2)))
+        op (Right (IntV n1)) (Right (IntV n2)) = Right $ IntV $ n1 + n2
 eval (Expr (In (Minus x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 - n2)))
+        op (Right (IntV n1)) (Right (IntV n2)) = Right $ IntV $ n1 - n2
 eval (Expr (In (Multiply x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 * n2)))
+        op (Right (IntV n1)) (Right (IntV n2)) = Right $ IntV $ n1 * n2
 eval (Expr (In (Divide x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (IntV n1)) (Right (IntV n2)) = (Right (IntV (n1 `div` n2)))
+        op (Right (IntV n1)) (Right (IntV n2)) = Right $ IntV $ n1 `div` n2
 eval (Expr (In (And x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (BoolV n1)) (Right (BoolV n2)) = (Right (BoolV (n1 && n2)))
+        op (Right (BoolV n1)) (Right (BoolV n2)) = Right $ BoolV $ n1 && n2
 eval (Expr (In (Or x y))) = op <$> eval (Expr x) <*> eval (Expr y)
     where
-        op (Right (BoolV n1)) (Right (BoolV n2)) = (Right (BoolV (n1 || n2)))
+        op (Right (BoolV n1)) (Right (BoolV n2)) = Right $ BoolV $ n1 || n2
+
+exec :: Statement -> State EvalState EvalCode
+exec (Statement (In (Compound list))) = do
+    state <- get
+    put (state { executionStack = (Statement <$> list) ++ (executionStack state) })
+    return SuccessC
+exec (Statement (In (VarDeclaration varType varId))) = do
+    state <- get
+    case M.lookup varId (symbolTable state) of 
+        Nothing -> do
+            put (state { symbolTable = M.insert varId Nothing symTable} )
+            return $ SuccessC
+            where 
+                symTable = symbolTable state 
+        _ -> return $ ErrorC $ "Error: Identifier " ++ varId ++ " already defined."
+exec (Statement (In (VarAssignment varId expr))) = do
+    state <- get
+    case runReader (eval expr) state of 
+        Left error -> return $ ErrorC $ error
+        Right val -> do
+            put (state { symbolTable = M.insert varId (Just val) symTable} )
+            return $ SuccessC
+            where 
+                symTable = symbolTable state 
+exec (Statement (In (Print expr))) = do
+    state <- get
+    case runReader (eval expr) state of
+        Left error -> return $ ErrorC $ error
+        Right val -> do
+            put (state { outputStream = val : (outputStream state)} )
+            return SuccessC
+exec (Statement (In (If expr ifBranch elseBranch))) = do
+    state <- get
+    let cond = runReader (eval expr) state
+    case cond of
+        Left error -> return $ ErrorC $ error
+        Right val -> do
+            if val == BoolV True then
+                exec $ Statement ifBranch
+            else
+                exec $ Statement elseBranch
+exec (Statement (In (NoOp))) = return SuccessC
+
+execAll :: EvalState -> EvalCode
+execAll (EvalState [] _ _) = SuccessC
+execAll state@(EvalState (h:t) _ _) = 
+    let (code, state') = runState (exec h) state
+    in case code of
+        ErrorC error -> ErrorC error
+        SuccessC -> execAll (state' { executionStack = t})
+
+test :: EvalState
+test = EvalState { executionStack = [mkStatement $ VarDeclaration IntT "a", mkStatement $ Compound [In $ NoOp, In $ NoOp]], symbolTable = M.empty, outputStream = [] }
 
 main :: IO ()
 main = putStrLn "Hello World!"
