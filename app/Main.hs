@@ -140,7 +140,7 @@ eval (Expr (In (Or x y))) = op <$> eval (Expr x) <*> eval (Expr y)
 exec :: Statement -> State EvalState EvalCode
 exec (Statement (In (Compound list))) = do
     state <- get
-    put (state { executionStack = (Statement <$> list) ++ (executionStack state) })
+    put (state { executionStack = (mkStatement NoOp) : (Statement <$> list) ++ (tail $ executionStack state) })
     return SuccessC
 exec (Statement (In (VarDeclaration varType varId))) = do
     state <- get
@@ -165,7 +165,7 @@ exec (Statement (In (Print expr))) = do
     case runReader (eval expr) state of
         Left error -> return $ ErrorC $ error
         Right val -> do
-            put (state { outputStream = val : (outputStream state)} )
+            put (state { outputStream = (outputStream state) ++ [val]} )
             return SuccessC
 exec (Statement (In (If expr ifBranch elseBranch))) = do
     state <- get
@@ -179,16 +179,38 @@ exec (Statement (In (If expr ifBranch elseBranch))) = do
                 exec $ Statement elseBranch
 exec (Statement (In (NoOp))) = return SuccessC
 
-execAll :: EvalState -> EvalCode
-execAll (EvalState [] _ _) = SuccessC
-execAll state@(EvalState (h:t) _ _) = 
-    let (code, state') = runState (exec h) state
+execAll :: EvalState -> String -> (String, EvalCode)
+execAll state@(EvalState [] _ os) trace = (trace ++ show state, SuccessC)
+execAll state@(EvalState (h:t) _ _) trace = 
+    let (code, state'@(EvalState (h':t') _ _)) = runState (exec h) state
     in case code of
-        ErrorC error -> ErrorC error
-        SuccessC -> execAll (state' { executionStack = t})
+        ErrorC error -> ("", ErrorC error)
+        SuccessC -> execAll (state' { executionStack = t'}) (trace ++ "\n" ++ show state)
 
 test :: EvalState
-test = EvalState { executionStack = [mkStatement $ VarDeclaration IntT "a", mkStatement $ Compound [In $ NoOp, In $ NoOp]], symbolTable = M.empty, outputStream = [] }
+test = EvalState { 
+                    executionStack = [
+                        mkStatement $ VarDeclaration BoolT "b",
+                        mkStatement $ VarAssignment "b" (mkBool True),
+                        mkStatement $ If (mkVar "b") 
+                            (In $ Compound [
+                                In $ Print (mkInt 1),
+                                In $ Print (mkInt 2),
+                                In $ Compound [
+                                    In $ If (mkVar "b")
+                                        (In $ Print (mkBool False))
+                                        (In $ NoOp)
+                                ]
+                            ])
+                            (In $ Print (mkInt 200)),
+                        mkStatement $ Print (mkInt 3)
+                        ],
+                    symbolTable = M.empty,
+                    outputStream = [] 
+                  }
 
 main :: IO ()
-main = putStrLn "Hello World!"
+main = do
+    let (trace, _) = execAll test ""
+    writeFile "log.txt" trace
+    return ()
