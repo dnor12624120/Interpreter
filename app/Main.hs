@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor, TypeFamilies, LambdaCase, UndecidableInstances #-}
 
+import Parser
 import Data.Map
 import Control.Monad.Reader
 import Control.Monad.Writer
@@ -181,8 +182,8 @@ exec (Statement (In (NoOp))) = return SuccessC
 
 execAll :: EvalState -> String -> (String, EvalCode)
 execAll state@(EvalState [] _ os) trace = (trace ++ show state, SuccessC)
-execAll state@(EvalState (h:t) _ _) trace = 
-    let (code, state'@(EvalState (h':t') _ _)) = runState (exec h) state
+execAll state@(EvalState (h:_) _ _) trace = 
+    let (code, state'@(EvalState (_:t') _ _)) = runState (exec h) state
     in case code of
         ErrorC error -> ("", ErrorC error)
         SuccessC -> execAll (state' { executionStack = t'}) (trace ++ "\n" ++ show state)
